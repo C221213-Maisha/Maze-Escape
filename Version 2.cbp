@@ -1,0 +1,509 @@
+#include <GL/glut.h>
+#include <vector>
+#include <queue>
+#include <algorithm>
+#include <string>
+#include <random>
+#include <chrono>
+#include <ctime>
+#include <unordered_map>
+#include <cmath>
+
+// ========== ENUMS & STATES ========== //
+enum GameState { START, PLAYING, WON, LOST };
+GameState gameState = START;
+
+enum Difficulty { EASY, MEDIUM, HARD };
+Difficulty difficulty = EASY;
+
+// ========== VARIABLES ========== //
+int mazeWidth, mazeHeight;
+std::vector<std::vector<int>> maze;
+int playerX, playerY;
+int exitX, exitY;
+
+std::vector<std::pair<int, int>> obstacles;
+
+float timeRemaining;
+clock_t startTime;
+const float EASY_TIME = 60.0f;
+const float MEDIUM_TIME = 45.0f;
+const float HARD_TIME = 30.0f;
+
+std::mt19937 rng(std::chrono::steady_clock::now().time_since_epoch().count());
+
+// ========== MAZE GENERATION ========== //
+void carveMaze(int x, int y, std::vector<std::vector<bool>>& visited) {
+    const int dx[] = {1, -1, 0, 0};
+    const int dy[] = {0, 0, 1, -1};
+    std::vector<int> directions = {0, 1, 2, 3};
+    std::shuffle(directions.begin(), directions.end(), rng);
+
+    for (int dir : directions) {
+        int nx = x + dx[dir] * 2;
+        int ny = y + dy[dir] * 2;
+
+        if (nx > 0 && nx < mazeWidth - 1 && ny > 0 && ny < mazeHeight - 1) {
+            if (!visited[ny][nx]) {
+                visited[ny][nx] = true;
+                maze[y + dy[dir]][x + dx[dir]] = 0;
+                maze[ny][nx] = 0;
+                carveMaze(nx, ny, visited);
+            } else if (maze[y + dy[dir]][x + dx[dir]] == 1 && rng() % 100 < 25) {
+                maze[y + dy[dir]][x + dx[dir]] = 0;
+            }
+        }
+    }
+}
+
+std::vector<std::pair<int,int>> findShortestPath() {
+    std::vector<std::pair<int,int>> path;
+    std::queue<std::pair<int,int>> q;
+    std::vector<std::vector<bool>> visited(mazeHeight, std::vector<bool>(mazeWidth, false));
+    std::unordered_map<int, int> parent;
+
+    q.push({playerX, playerY});
+    visited[playerY][playerX] = true;
+
+    bool found = false;
+    while (!q.empty()) {
+        auto [x, y] = q.front(); q.pop();
+
+        if (x == exitX && y == exitY) {
+            found = true;
+            break;
+        }
+
+        const int dx[] = {1, -1, 0, 0};
+        const int dy[] = {0, 0, 1, -1};
+
+        for (int dir = 0; dir < 4; ++dir) {
+            int nx = x + dx[dir], ny = y + dy[dir];
+            if (nx >= 0 && nx < mazeWidth && ny >= 0 && ny < mazeHeight &&
+                maze[ny][nx] == 0 && !visited[ny][nx]) {
+                visited[ny][nx] = true;
+                parent[ny * mazeWidth + nx] = y * mazeWidth + x;
+                q.push({nx, ny});
+            }
+        }
+    }
+
+    if (!found) return path;
+    int cur = exitY * mazeWidth + exitX;
+    while (cur != playerY * mazeWidth + playerX) {
+        int x = cur % mazeWidth;
+        int y = cur / mazeWidth;
+        path.push_back({x, y});
+        cur = parent[cur];
+    }
+    path.push_back({playerX, playerY});
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+void addObstacles() {
+    obstacles.clear();
+    int numObstacles = (difficulty == EASY) ? 5 : (difficulty == MEDIUM ? 10 : 20);
+    auto path = findShortestPath();
+    std::vector<std::vector<bool>> onPath(mazeHeight, std::vector<bool>(mazeWidth, false));
+    for (auto& p : path) onPath[p.second][p.first] = true;
+
+    while ((int)obstacles.size() < numObstacles) {
+        int x = rng() % mazeWidth;
+        int y = rng() % mazeHeight;
+        if (maze[y][x] == 0 && !(x == playerX && y == playerY) && !(x == exitX && y == exitY) && !onPath[y][x]) {
+            bool alreadyUsed = false;
+            for (auto& o : obstacles)
+                if (o.first == x && o.second == y) { alreadyUsed = true; break; }
+            if (!alreadyUsed) obstacles.emplace_back(x, y);
+        }
+    }
+}
+
+void generateMaze() {
+    maze.assign(mazeHeight, std::vector<int>(mazeWidth, 1));
+    std::vector<std::vector<bool>> visited(mazeHeight, std::vector<bool>(mazeWidth, false));
+    visited[1][1] = true;
+    maze[1][1] = 0;
+    carveMaze(1, 1, visited);
+
+    playerX = 1;
+    playerY = 1;
+    exitX = mazeWidth - 2;
+    exitY = mazeHeight - 2;
+    maze[exitY][exitX] = 0;
+
+    addObstacles();
+    timeRemaining = (difficulty == EASY) ? EASY_TIME : (difficulty == MEDIUM ? MEDIUM_TIME : HARD_TIME);
+    startTime = clock();
+}
+
+void initGame() {
+    mazeWidth = (difficulty == EASY) ? 11 : (difficulty == MEDIUM ? 15 : 21);
+    mazeHeight = mazeWidth;
+    generateMaze();
+    gameState = PLAYING;
+}
+
+// ========== DRAWING ========== //
+void drawWall(float x, float y) {
+    glPushMatrix();
+    glTranslatef(x + 0.5f, 0.0f, -(y + 0.5f));
+    glColor3f(0.5f, 0.0f, 0.8f);
+    glutSolidCube(1.0f);
+    glPopMatrix();
+}
+
+void drawPlayer(float x, float y) {
+    glPushMatrix();
+    glTranslatef(x + 0.5f, 0.3f, -(y + 0.5f));
+    glColor3f(1.0f, 0.8f, 0.2f);
+    glutSolidSphere(0.3f, 20, 20);
+    glPopMatrix();
+}
+
+void drawExit(float x, float y) {
+    glPushMatrix();
+    glTranslatef(x + 0.5f, 0.5f, -(y + 0.5f));
+    glColor3f(0.2f, 1.0f, 0.2f);
+    glutSolidCube(0.8f);
+    glPopMatrix();
+}
+
+void drawObstacle(float x, float y) {
+    glPushMatrix();
+    glTranslatef(x + 0.5f, 0.4f, -(y + 0.5f));
+    glColor3f(1.0f, 0.2f, 0.2f);
+    glutSolidCube(0.6f);
+    glPopMatrix();
+}
+
+void drawText(float x, float y, const std::string& text, void* font = GLUT_BITMAP_HELVETICA_18) {
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(0, 800, 0, 600);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glDisable(GL_DEPTH_TEST);
+
+    glColor3f(1.0, 1.0, 1.0);
+    glRasterPos2f(x, y);
+    for (char c : text)
+        glutBitmapCharacter(font, c);
+
+    glEnable(GL_DEPTH_TEST);
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+}
+
+void drawCenteredSpacedText(float y, const std::string& text, int letterSpacing = 5, void* font = GLUT_BITMAP_TIMES_ROMAN_24) {
+    int totalWidth = 0;
+    for (char c : text)
+        totalWidth += glutBitmapWidth(font, c) + letterSpacing;
+    totalWidth -= letterSpacing;
+
+    float x = (800 - totalWidth) / 2.0f;
+
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(0, 800, 0, 600);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glDisable(GL_DEPTH_TEST);
+    glColor3f(1.0f, 1.0f, 1.0f);
+
+    for (char c : text) {
+        glRasterPos2f(x, y);
+        glutBitmapCharacter(font, c);
+        x += glutBitmapWidth(font, c) + letterSpacing;
+    }
+
+    glEnable(GL_DEPTH_TEST);
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+}
+
+void drawCenteredText(float y, const std::string& text, void* font = GLUT_BITMAP_HELVETICA_18) {
+    int width = 0;
+    for (char c : text)
+        width += glutBitmapWidth(font, c);
+
+    float x = (800 - width) / 2.0f;
+    drawText(x, y, text, font);
+}
+
+void drawRoundedButton(float x, float y, float width, float height, float radius, const std::string& label) {
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(0, 800, 0, 600);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glDisable(GL_DEPTH_TEST);
+
+    int segments = 20;
+    float cornerAngle = M_PI / 2.0f / segments;
+
+    glBegin(GL_QUADS);
+    glColor3f(0.6f, 0.2f, 0.8f);
+    glVertex2f(x + radius, y);
+    glVertex2f(x + width - radius, y);
+    glColor3f(0.4f, 0.1f, 0.6f);
+    glVertex2f(x + width - radius, y + height);
+    glVertex2f(x + radius, y + height);
+    glEnd();
+
+    for (int i = 0; i < 4; i++) {
+        float cx, cy;
+        float angleStart = i * M_PI / 2.0f;
+
+        if (i == 0) { cx = x + width - radius; cy = y + radius; }
+        else if (i == 1) { cx = x + radius; cy = y + radius; }
+        else if (i == 2) { cx = x + radius; cy = y + height - radius; }
+        else { cx = x + width - radius; cy = y + height - radius; }
+
+        glBegin(GL_TRIANGLE_FAN);
+        glColor3f(0.6f, 0.2f, 0.8f);
+
+        for (int j = 0; j <= segments; j++) {
+            float angle = angleStart + j * cornerAngle;
+            glColor3f(0.4f, 0.1f, 0.6f);
+            glVertex2f(cx + cos(angle) * radius, cy + sin(angle) * radius);
+        }
+        glEnd();
+    }
+
+    glColor3f(0.8f, 0.6f, 1.0f);
+    glLineWidth(2.0f);
+    glBegin(GL_LINE_LOOP);
+    glVertex2f(x + radius, y);
+    glVertex2f(x + width - radius, y);
+    for (int i = 0; i <= segments; i++) {
+        float angle = i * cornerAngle;
+        glVertex2f(x + width - radius + cos(angle) * radius, y + radius - sin(angle) * radius);
+    }
+    glVertex2f(x + width, y + radius);
+    glVertex2f(x + width, y + height - radius);
+    for (int i = 0; i <= segments; i++) {
+        float angle = M_PI/2 + i * cornerAngle;
+        glVertex2f(x + width - radius + cos(angle) * radius, y + height - radius - sin(angle) * radius);
+    }
+    glVertex2f(x + width - radius, y + height);
+    glVertex2f(x + radius, y + height);
+    for (int i = 0; i <= segments; i++) {
+        float angle = M_PI + i * cornerAngle;
+        glVertex2f(x + radius + cos(angle) * radius, y + height - radius - sin(angle) * radius);
+    }
+    glVertex2f(x, y + height - radius);
+    glVertex2f(x, y + radius);
+    for (int i = 0; i <= segments; i++) {
+        float angle = 3*M_PI/2 + i * cornerAngle;
+        glVertex2f(x + radius + cos(angle) * radius, y + radius - sin(angle) * radius);
+    }
+    glEnd();
+
+    int labelWidth = 0;
+    for (char c : label)
+        labelWidth += glutBitmapWidth(GLUT_BITMAP_HELVETICA_12, c);
+
+    float textX = x + (width - labelWidth) / 2.0f;
+    float textY = y + height / 2.0f - 4;
+
+    glColor3f(1.0, 1.0, 1.0);
+    glRasterPos2f(textX, textY);
+    for (char c : label)
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, c);
+
+    glEnable(GL_DEPTH_TEST);
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+}
+
+// ========== TIMER ========== //
+void updateTimer() {
+    if (gameState == PLAYING) {
+        clock_t currentTime = clock();
+        float elapsed = float(currentTime - startTime) / CLOCKS_PER_SEC;
+        if (elapsed >= 1.0f) {
+            timeRemaining -= elapsed;
+            if (timeRemaining <= 0) {
+                timeRemaining = 0;
+                gameState = LOST;
+            }
+            startTime = currentTime;
+        }
+    }
+}
+
+// ========== MOVEMENT ========== //
+bool isValidMove(int x, int y) {
+    if (x < 0 || x >= mazeWidth || y < 0 || y >= mazeHeight || maze[y][x] == 1)
+        return false;
+    for (auto& o : obstacles) {
+        if (o.first == x && o.second == y) {
+            gameState = LOST;  // Set game state to LOST when hitting an obstacle
+            return false;
+        }
+    }
+    return true;
+}
+
+void movePlayer(int dx, int dy) {
+    int newX = playerX + dx, newY = playerY + dy;
+    if (isValidMove(newX, newY)) {
+        playerX = newX;
+        playerY = newY;
+        if (newX == exitX && newY == exitY) gameState = WON;
+    }
+}
+
+// ========== DISPLAY ========== //
+void display() {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glLoadIdentity();
+
+    if (gameState == START) {
+        glClearColor(0.2f, 0.0f, 0.3f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glColor3f(0.9f, 0.7f, 1.0f);
+        drawCenteredSpacedText(460, "MAZE ESCAPE", 18, GLUT_BITMAP_TIMES_ROMAN_24);
+
+        float buttonWidth = 200;
+        float buttonX = (800 - buttonWidth) / 2.0f;
+        drawRoundedButton(buttonX, 350, buttonWidth, 50, 15.0f, "EASY (60s)");
+        drawRoundedButton(buttonX, 270, buttonWidth, 50, 15.0f, "MEDIUM (45s)");
+        drawRoundedButton(buttonX, 190, buttonWidth, 50, 15.0f, "HARD (30s)");
+
+        glColor3f(0.7f, 0.5f, 0.8f);
+        drawCenteredText(120, "Use WASD or Arrow Keys to move...");
+        drawCenteredText(80, "Navigate to the green exit before time runs out!");
+
+    } else {
+        glClearColor(0.15f, 0.0f, 0.3f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        float camHeight = mazeHeight * 1.5f;
+        gluLookAt(mazeWidth / 2.0f, camHeight, mazeHeight / 2.0f,
+                  mazeWidth / 2.0f, 0.0f, -mazeHeight / 2.0f,
+                  0.0f, 1.0f, 0.0f);
+
+        for (int y = 0; y < mazeHeight; y++) {
+            for (int x = 0; x < mazeWidth; x++) {
+                glPushMatrix();
+                glTranslatef(x, -0.5f, -y);
+                glColor3f(0.3f, 0.1f, 0.5f);
+                glutSolidCube(1.0f);
+                glPopMatrix();
+                if (maze[y][x] == 1) drawWall(x, y);
+            }
+        }
+
+        drawExit(exitX, exitY);
+        drawPlayer(playerX, playerY);
+        for (auto& o : obstacles) drawObstacle(o.first, o.second);
+
+        drawText(10, 580, "Time: " + std::to_string((int)timeRemaining) + "s");
+
+        if (gameState == WON) {
+            drawCenteredText(300, "YOU WON! Press R to restart", GLUT_BITMAP_HELVETICA_18);
+        } else if (gameState == LOST) {
+            if (timeRemaining <= 0) {
+                drawCenteredText(300, "TIME'S UP! Press R to restart", GLUT_BITMAP_HELVETICA_18);
+            } else {
+                drawCenteredText(300, "YOU CRASHED! Press R to restart", GLUT_BITMAP_HELVETICA_18);
+            }
+        }
+    }
+
+    glutSwapBuffers();
+}
+
+// ========== INPUT ========== //
+void keyboard(unsigned char key, int, int) {
+    if (gameState == PLAYING) {
+        switch (key) {
+            case 'w': movePlayer(0, 1); break;
+            case 's': movePlayer(0, -1); break;
+            case 'a': movePlayer(-1, 0); break;
+            case 'd': movePlayer(1, 0); break;
+        }
+    }
+    if (key == 'r' || key == 'R') gameState = START;
+    glutPostRedisplay();
+}
+
+void specialKeys(int key, int, int) {
+    if (gameState == PLAYING) {
+        switch (key) {
+            case GLUT_KEY_UP: movePlayer(0, 1); break;
+            case GLUT_KEY_DOWN: movePlayer(0, -1); break;
+            case GLUT_KEY_LEFT: movePlayer(-1, 0); break;
+            case GLUT_KEY_RIGHT: movePlayer(1, 0); break;
+        }
+    }
+    glutPostRedisplay();
+}
+
+void mouse(int button, int state, int x, int y) {
+    if (gameState != START || button != GLUT_LEFT_BUTTON || state != GLUT_DOWN) return;
+    y = 600 - y;
+
+    float buttonWidth = 200;
+    float buttonX = (800 - buttonWidth) / 2.0f;
+
+    if (x >= buttonX && x <= buttonX + buttonWidth) {
+        if (y >= 350 && y <= 400) { difficulty = EASY; initGame(); }
+        else if (y >= 270 && y <= 320) { difficulty = MEDIUM; initGame(); }
+        else if (y >= 190 && y <= 240) { difficulty = HARD; initGame(); }
+    }
+    glutPostRedisplay();
+}
+
+void timer(int) {
+    updateTimer();
+    glutPostRedisplay();
+    glutTimerFunc(1000, timer, 0);
+}
+
+// ========== MAIN ========== //
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+    glutInitWindowSize(800, 600);
+    glutCreateWindow("Maze Escape");
+
+    glEnable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    gluPerspective(60.0, 800.0 / 600.0, 0.1, 100.0);
+    glMatrixMode(GL_MODELVIEW);
+
+    glutDisplayFunc(display);
+    glutKeyboardFunc(keyboard);
+    glutSpecialFunc(specialKeys);
+    glutMouseFunc(mouse);
+    glutTimerFunc(1000, timer, 0);
+
+    glutMainLoop();
+    return 0;
+}
